@@ -1,6 +1,6 @@
-module github.com/andig/go-powerwall
+module github.com/blampe/powerwall
 
-go 1.18
+go 1.25
 
 require (
 	github.com/jessevdk/go-flags v1.5.0

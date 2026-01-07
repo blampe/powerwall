@@ -1,3 +1,5 @@
 .*.sw?
 .test
-cmd/powerwall-cmd/powerwall-cmd
+powerwall-cmd
+mise.local.toml
+

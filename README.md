@@ -1,108 +1,257 @@
-[![Go Reference](https://pkg.go.dev/badge/github.com/andig/go-powerwall.svg)](https://pkg.go.dev/github.com/andig/go-powerwall)
+[![Go Reference](https://pkg.go.dev/badge/github.com/blampe/powerwall.svg)](https://pkg.go.dev/github.com/blampe/powerwall)
 
-# go-powerwall
+# powerwall
 
-A Go library for communicating with Tesla Powerwall appliances via the local-network API.
-
----
-
-***Many thanks to [Vince Loschiavo](https://github.com/vloschiavo) and other contributors to https://github.com/vloschiavo/powerwall2 for providing a lot of the information to make this possible!***
-
-**Note:** The Tesla powerwall interface is an undocumented API which is not supported by Tesla, and could change at any time.  This library has been tested on devices running version 21.39 and 21.44 of the firmware only, at this time.
-
-**This library is incomplete.**  Pull requests to add support for more functions are always welcome!
+A Go library for communicating with Tesla Powerwall 3 appliances via Tesla's
+Fleet API.
 
 ---
 
-This library is intended to allow clients to easily pull information from and send commands to a Tesla Powerwall via a Tesla Home Energy Gateway 2.  Note that this is the internal local-network API exposed by the device itself.  It is not the same as the [Tesla Owner API](https://tesla-api.timdorr.com/), which allows you to control the device via Tesla's servers over the Internet.  To use this API, your Powerwall Energy Gateway must be connected to a local network via WiFi or Ethernet, and accessible via that network.
+**Note:** This library uses Tesla's Fleet API, which requires proper OAuth
+authentication and may have usage limits. All of the APIs involved don't
+currently incur charges, but Tesla's APIs are subject to change at any time.
+
+---
+
+This library allows clients to easily pull real-time monitoring data,
+historical energy data, and send control commands to Tesla Powerwall 3 systems
+via Tesla's cloud-based Fleet API. This is **not** the local gateway API, but
+rather the official Tesla Fleet API that provides alternative functionality and
+multi-site support.
+
+## Prerequisites
+
+To use this library, you need:
+
+1. **Tesla Fleet API Access**: Register for Tesla Fleet API access and obtain OAuth credentials ([myteslamate](https://www.myteslamate.com/tesla-api-application-registration/))
+2. **Access Tokens**: Valid `ACCESS_TOKEN` and `REFRESH_TOKEN` from Tesla OAuth flow
+3. **Client ID**: Your Fleet API `CLIENT_ID` (from registered OAuth app)
+4. **Energy Site ID**: Your Powerwall site ID (optional - library can auto-detect)
 
 ## Basic Usage
 
-First, create a new client instance by calling `powerwall.NewClient`, providing the hostname or IP address of the gateway appliance, along with the email address and password which should be used to login.  (If you have not already, it is recommended that you first login to the device using a web browser and change your password, as detailed [on Tesla's website](https://www.tesla.com/support/energy/powerwall/own/monitoring-from-home-network).)  Once you have a client object, you can use its various functions to retrieve information from the device, etc.
+Create a client instance using OAuth tokens and start making API calls:
 
 ```go
 import (
 	"fmt"
-	"github.com/foogod/go-powerwall"
+	"github.com/blampe/powerwall"
 )
 
 func main() {
-	client := powerwall.NewClient("192.168.123.45", "teslaguy@example.com", "MySuperSecretPassword!")
-	result, err := client.GetStatus()
+	// Create Fleet API client with OAuth tokens
+	client := powerwall.NewClient("your-client-id", "your-access-token", "your-refresh-token")
+
+	// Get available energy sites
+	products, err := client.GetEnergyProducts()
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("The gateway's ID number is: %s\nIt is running version: %s\n", result.Din, result.Version)
+
+	// Select the first energy site
+	if len(products) > 0 {
+		err = client.SelectEnergySite(products[0].EnergyProductID)
+		if err != nil {
+			panic(err)
+		}
+
+		// Get real-time status
+		status, err := client.GetStatus()
+		if err != nil {
+			panic(err)
+		}
+
+		fmt.Printf("Site: %s\nSystem timestamp: %s\n",
+			products[0].SiteName, status.StartTime.Time.Format("2006-01-02 15:04:05"))
+
+		// Get current battery level
+		soe, err := client.GetSOE()
+		if err != nil {
+			panic(err)
+		}
+
+		fmt.Printf("Battery charge: %.1f%%\n", soe.Percentage)
+	}
 }
 ```
 
-The client will automatically login to the device as needed, and will remember and re-use the auth-token between calls.  It will also automatically re-login if necessary (i.e. if the token expires).
+## Environment Variables
 
-## TLS Certificates
+The CLI tool uses these environment variables for configuration:
 
-The Tesla gateway uses a self-signed certificate, which means that it shows up as invalid by default (because it is not signed by any known authority).  For this reason, the default behavior of the client is to not try to validate the TLS certificate when connecting.  This works, but it is insecure, as it is possible for someone else to impersonate the gateway instead (a "man in the middle attack").  If a more secure configuration is desired, the library does support a way to do full TLS validation, but you will need to provide it with a copy of the certificate to validate against after creating the client, using the `SetTLSCert` function.
-
-```go
-	client := powerwall.NewClient("192.168.123.45", "someguy@example.com", "MySuperSecretPassword!")
-	client.SetTLSCert(cert)
+```bash
+export ACCESS_TOKEN="your-tesla-access-token"
+export REFRESH_TOKEN="your-tesla-refresh-token"
+export CLIENT_ID="your-oauth-client-id"
+export SITE_ID="your-energy-site-id"             # optional, will auto-select first site
 ```
 
-The certificate can be obtained using command-line utilities such as `openssl`; however, the client does also have a handy function for retrieving the certificate from a Powerwall gateway directly, as well:
+## Command Line Tool
 
-```go
-	cert, err := client.FetchTLSCert()
+A command-line utility is included for testing and scripting:
+
+```bash
+# Build the CLI tool
+go build -o powerwall-cmd ./cmd
+
+# List energy sites
+./powerwall-cmd products
+
+# Get real-time power flows
+./powerwall-cmd aggregates
+
+# Get battery state of charge
+./powerwall-cmd soe
+
+# Get historical energy data (5-minute intervals)
+./powerwall-cmd energy_history 2024-01-01T00:00:00Z 2024-01-02T00:00:00Z day
+
+# Set backup reserve to 20%
+./powerwall-cmd set_backup_reserve 20
+
+# Enable Storm Watch mode
+./powerwall-cmd set_storm_mode true
 ```
 
-The typical use-case of this would be to provide a special option or command in your program to fetch and store the certificate in a file initially, and from then on read it from the file and use that to set the certificate when creating any new clients going forward, before performing any API calls.  For an example of this, see the `--certfile` and `fetchcert` options of the [powerwall-cmd](cmd/powerwall-cmd/main.go) sample program in this repo.
+## Available API Methods
 
-## Retrying requests
+### Real-time Monitoring
+- `GetStatus()` - System status and timestamps
+- `GetSiteInfo()` - Installation details and configuration
+- `GetMetersAggregates()` - Live power flows (solar, battery, grid, load)
+- `GetSOE()` - Battery state of energy (charge percentage)
+- `GetGridStatus()` - Grid connection status
 
-Tesla's Powerwall appliances seem to have some issues staying reliably connected to WiFi networks (for me, at least), and will periodically become disconnected for a few seconds and then reconnect.  This can cause a problem if you happen to hit your API request at the wrong time, as you will just end up with a network error instead.
+### Multi-site Management
+- `GetProducts()` - List all products (vehicles + energy sites)
+- `GetEnergyProducts()` - List energy sites only
+- `SelectEnergySite(id)` - Set active site for subsequent calls
 
-To work around this, the client can be configured to retry HTTP requests for a given amount of time before actually giving up, if they are failing because of network connection errors.  This can be done by calling the SetRetry function with the desired retry interval and timeout:
+### Historical Data
+- `GetEnergyHistory(start, end, period)` - Energy totals with 5-minute granularity
+- `GetBackupHistory(start, end, period)` - Backup/outage events
+- `GetTelemetryHistory(start, end)` - Charge telemetry data
+- `GetCalendarHistory(kind, start, end, period)` - Generic historical data
+
+### Control Commands
+- `SetBackupReserve(percent)` - Set backup reserve percentage (0-100)
+- `SetStormMode(enabled)` - Enable/disable Storm Watch mode
+- `SetSiteName(name)` - Change site display name
+
+## Authentication and Token Management
+
+The client automatically handles OAuth token refresh when needed:
 
 ```go
-	// Retry attempts every second, giving up after a minute of failed attempts.
-	interval := time.ParseDuration("1s")
-	timeout := time.ParseDuration("60s")
-	client.SetRetry(interval, timeout)
+client := powerwall.NewClient(accessToken, refreshToken, clientID)
+
+// Client will automatically refresh tokens when they expire
+// Access refreshed tokens if needed:
+newAccessToken := client.GetAccessToken()
+newRefreshToken := client.GetRefreshToken()
 ```
 
-The client will wait at least the specified interval between attempts (but it may sometimes be longer if, for example, a connection timeout takes longer than that interval just to return the error).  It will keep trying until the timeout has been exceeded (doing however many retries it can fit within that period).
+## Rate Limiting
 
-This behavior is disabled by default.  Setting the timeout to zero (or negative) will also disable all retries.  (Note that setting interval to zero (or negative) is also allowed, but will result in the library attempting to retry as fast as possible, which may produce excessive network traffic or CPU usage, so it is not generally advised.)
+The Fleet API has built-in rate limiting. The client automatically handles rate limits with appropriate delays:
 
-## Saving and re-using the auth token
+- **Real-time data**: 60 requests per minute
+- **Control commands**: 30 requests per minute
 
-If you are making a program which needs to regularly create new clients (such as a command-line utility which gets run on a regular basis to collect stats and then exit, etc), it may be desirable to save the auth token after login so that it can be re-used later.  This can be done using the `GetAuthToken` and `SetAuthToken` functions:
+## Error Handling
+
+The library provides specific error types for different scenarios:
 
 ```go
-	token := client.GetAuthToken()
-	client.SetAuthToken(token)
+result, err := client.GetStatus()
+if err != nil {
+	switch e := err.(type) {
+	case powerwall.TokenExpiredError:
+		// Token expired and refresh failed
+		fmt.Println("Authentication failed:", e.Message)
+	case powerwall.RateLimitError:
+		// Rate limit exceeded
+		fmt.Println("Rate limited, retry after:", e.RetryAfter)
+	case powerwall.UnsupportedError:
+		// Feature not available via Fleet API
+		fmt.Println("Unsupported operation:", e.Reason)
+	case powerwall.ApiError:
+		// General API error
+		fmt.Printf("API error %d: %s\n", e.StatusCode, e.Message)
+	default:
+		// Network or other error
+		fmt.Println("Error:", err)
+	}
+}
 ```
 
-(Note that the client must have already performed a login before you will be able to retrieve a valid token with `GetAuthToken`.  This will happen automatically if you attempt to fetch from an API which requires authentication, or you can use `DoLogin` initially to force a login operation first.)
+## Historical Data Examples
 
-Keep in mind that the client will automatically re-login (and thus generate a new auth token) if the provided one is invalid (it has expired, etc).  It is therefore a good idea to check periodically whether the token has changed (using GetAuthToken), and if so update your saved copy as well.
+Get detailed energy data with 5-minute resolution:
 
-For an example of this, see the `--authcache` option of the [powerwall-cmd](cmd/powerwall-cmd/main.go) sample program in this repo.
+```go
+// Get last week's daily energy totals
+endDate := time.Now().Format("2006-01-02T15:04:05Z")
+startDate := time.Now().AddDate(0, 0, -7).Format("2006-01-02T15:04:05Z")
+history, err := client.GetEnergyHistory(startDate, endDate, "day")
+
+if err == nil {
+	for _, point := range history.TimeSeries {
+		fmt.Printf("%s: Solar: %dWh, Grid: %dWh, Battery: %dWh\n",
+			point.Timestamp.Format("2006-01-02 15:04"),
+			point.SolarEnergyExported,
+			point.GridEnergyImported,
+			point.BatteryEnergyExported)
+	}
+}
+```
 
 ## Logging
 
-If something is not working properly, it may be useful to get debug logging of what the `powerwall` library is doing behind the scenes (including HTTP requests/responses, etc).  You can register a logging function for this purpose using `powerwall.SetLogFunc`:
+Enable debug logging to troubleshoot API calls:
 
 ```go
-func myLogFunc(v ...interface{}) {
-        msg := fmt.Sprintf(v...)
-	fmt.Printf("powerwall: %s\n", msg)
+import log "github.com/sirupsen/logrus"
+
+func logDebug(v ...interface{}) {
+	log.Debug(v...)
+}
+
+func logError(msg string, err error) {
+	log.WithFields(log.Fields{"err": err}).Error(msg)
 }
 
 func main() {
+	log.SetLevel(log.DebugLevel)
 	powerwall.SetLogFunc(logDebug)
+	powerwall.SetErrFunc(logError)
 
-	(...)
+	// Your code here...
 }
 ```
 
-(The arguments to the log function are the same as for Sprintf/etc.  Note, however, that generated log lines are not terminated with "\n", so you will need to add a newline if you are sending them to something like `fmt.Printf` directly.)
+## Unsupported Features
 
+Some features from the legacy local gateway API are not available via Tesla's Fleet API:
+
+- Detailed system diagnostics (`GetSystemStatus`)
+- Local network configuration (`GetNetworks`)
+- Individual meter details (`GetMeters`)
+- Grid fault information (`GetGridFaults`)
+- Sitemaster clustering data (`GetSitemaster`)
+- Low-level operation data (`GetOperation`)
+
+These methods will return `UnsupportedError` when called.
+
+## Contributing
+
+Pull requests are welcome! The Tesla Fleet API is extensive and this library doesn't yet support all available endpoints. Areas for contribution:
+
+- Additional historical data endpoints
+- Vehicle integration (if you have both Powerwall and Tesla vehicle)
+- Enhanced error handling and retry logic
+- Additional control commands as they become available
+
+## License
+
+This library is provided as-is. Tesla's Fleet API terms of service apply to all usage.
